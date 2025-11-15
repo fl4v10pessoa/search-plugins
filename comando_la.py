@@ -1,104 +1,195 @@
-# VERSION: 1.4
 # -*- coding: utf-8 -*-
 """
-qBittorrent Search Plugin para https://comando.la (VERSÃO PÚBLICA - SEM LOGIN)
-Autor: Grok (para @FlavioPessoa_)
-Testado com qBittorrent v4.6+ | Python 3
-Site público: buscas anônimas via /torrents.php
+qBittorrent Search Plugin
+Name: Comando.la
+Author: Grok (adaptado para @FlavioPessoa_)
+Website: https://comando.la
 """
 
-from novaprinter import prettyPrinter
-from helpers import retrieve_url
 import re
+import sys
 import urllib.parse
-import html
+from html.parser import HTMLParser
+from typing import List, Dict, Any
+import http.client
 
-class comando_la(object):
-    url = 'https://comando.la'
-    name = 'Comando.la (Público)'
-    # Categorias baseadas em trackers semelhantes (ajuste se necessário)
-    supported_categories = {
-        'all': '0',
-        'movies': '1',      # Filmes
-        'tv': '2',          # TV/Séries
-        'music': '3',       # Música
-        'games': '4',       # Jogos
-        'apps': '5',        # Apps/Software
-        'anime': '6',       # Anime
-        'xxx': '7',         # Adulto (se aplicável)
-        'other': '8'        # Outros
+# Configurações do qBittorrent Search Plugin
+PLUGIN_NAME = "Comando.la"
+PLUGIN_AUTHOR = "Grok"
+PLUGIN_VERSION = "1.0"
+PLUGIN_DESCRIPTION = "Busca torrents de filmes e séries no Comando.la"
+PLUGIN_URL = "https://comando.la"
+
+# Cabeçalhos para evitar bloqueio
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+class ComandoLaParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.results = []
+        self.current = {}
+        self.in_article = False
+        self.in_title = False
+        self.in_link = False
+        self.in_size = False
+        self.in_quality = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+
+        if tag == "article" and "post" in attrs.get("class", ""):
+            self.in_article = True
+            self.current = {"seeds": 0, "peers": 0, "size": "0 MB"}
+
+        elif self.in_article and tag == "a" and "href" in attrs:
+            href = attrs["href"]
+            if "/comando.la/" in href and not href.endswith("/page/"):
+                self.current["link"] = href
+                self.in_link = True
+
+        elif self.in_article and tag == "h2" and "entry-title" in attrs.get("class", ""):
+            self.in_title = True
+
+        elif self.in_article and tag == "span" and "size" in attrs.get("class", ""):
+            self.in_size = True
+
+        elif self.in_article and tag == "img":
+            self.current["category"] = attrs.get("alt", "Filme")
+
+    def handle_endtag(self, tag):
+        if tag == "article" and self.in_article:
+            self.in_article = False
+            if "link" in self.current and "name" in self.current:
+                self.results.append(self.current)
+            self.current = {}
+            self.in_title = self.in_link = self.in_size = False
+
+        elif self.in_title and tag == "h2":
+            self.in_title = False
+        elif self.in_link and tag == "a":
+            self.in_link = False
+        elif self.in_size and tag == "span":
+            self.in_size = False
+
+    def handle_data(self, data):
+        data = data.strip()
+        if not data:
+            return
+
+        if self.in_title:
+            self.current["name"] = data.replace("Torrent", "").strip()
+
+        elif self.in_size:
+            size_match = re.search(r'([\d\.]+)\s*(GB|MB)', data, re.I)
+            if size_match:
+                size_val = float(size_match.group(1))
+                unit = size_match.group(2).upper()
+                size_bytes = size_val * (1024**3 if unit == "GB" else 1024**2)
+                self.current["size"] = f"{size_val:.2f} {unit}"
+
+        elif self.in_article and "ano" in data.lower():
+            year_match = re.search(r'\b(19|20)\d{2}\b', data)
+            if year_match:
+                self.current["name"] = self.current.get("name", "") + f" ({year_match.group(0)})"
+
+
+def search(query: str, category: str = "") -> List[Dict[str, Any]]:
+    query = urllib.parse.quote_plus(query)
+    url = f"https://comando.la/?s={query}"
+    results = []
+
+    try:
+        conn = http.client.HTTPSConnection("comando.la", timeout=10)
+        conn.request("GET", f"/?s={query}", headers=HEADERS)
+        response = conn.getresponse()
+
+        if response.status != 200:
+            return results
+
+        data = response.read().decode("utf-8", errors="ignore")
+        conn.close()
+
+        parser = ComandoLaParser()
+        parser.feed(data)
+
+        for item in parser.results[:50]:  # Limita a 50 resultados
+            name = item.get("name", "Sem título")
+            link = item.get("link")
+            size = item.get("size", "0 MB")
+
+            # Extrai magnet da página do item
+            magnet = get_magnet_link(link)
+            if not magnet:
+                continue
+
+            results.append({
+                "name": name,
+                "size": size,
+                "seeds": 999,  # comando.la não mostra seeds
+                "peers": 999,
+                "link": magnet,
+                "desc_link": link,
+            })
+
+    except Exception as e:
+        print(f"[Comando.la] Erro: {e}", file=sys.stderr)
+
+    return results
+
+
+def get_magnet_link(page_url: str) -> str:
+    try:
+        conn = http.client.HTTPSConnection("comando.la", timeout=10)
+        path = urllib.parse.urlparse(page_url).path + urllib.parse.urlparse(page_url).query
+        conn.request("GET", path, headers=HEADERS)
+        response = conn.getresponse()
+        if response.status != 200:
+            return ""
+
+        data = response.read().decode("utf-8", errors="ignore")
+        conn.close()
+
+        # Procura por magnet link
+        magnet_match = re.search(r'magnet:\?xt=urn:btih:[a-zA-Z0-9]+', data)
+        if magnet_match:
+            return magnet_match.group(0)
+
+        # Alternativa: link de torrent
+        torrent_match = re.search(r'href=["\']([^"\']*\.torrent)["\']', data)
+        if torrent_match:
+            torrent_url = torrent_match.group(1)
+            if not torrent_url.startswith("http"):
+                torrent_url = "https://comando.la" + torrent_url
+            return torrent_url
+
+    except:
+        pass
+    return ""
+
+
+# === Interface obrigatória do qBittorrent ===
+def search_plugins():
+    return {
+        PLUGIN_NAME: {
+            "name": PLUGIN_NAME,
+            "author": PLUGIN_AUTHOR,
+            "version": PLUGIN_VERSION,
+            "desc": PLUGIN_DESCRIPTION,
+            "search": search,
+        }
     }
 
-    def search(self, what, cat='all'):
-        """
-        Busca anônima no comando.la
-        - what: termo de busca
-        - cat: categoria (opcional)
-        """
-        query = urllib.parse.quote_plus(what)
-        cat_id = self.supported_categories.get(cat, '0')
-        # URL de busca típica para trackers (ex: torrents.php?search=query&cat=id)
-        search_url = f"{self.url}/torrents.php?search={query}&active=1&cat={cat_id}"
 
-        # Headers anônimos (sem cookies)
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Referer': self.url
-        }
-
-        try:
-            page = retrieve_url(search_url, headers=headers)
-        except Exception as e:
-            print(f"Erro ao acessar {search_url}: {e} - Site pode estar offline ou bloqueado!")
-            return
-
-        if not page or 'error' in page.lower() or len(page) < 1000:
-            print("Página vazia ou erro - verifique se o site está no ar.")
-            return
-
-        # Regex para extrair torrents (adaptado para estrutura comum de trackers como Gazelle/UNIT3D)
-        # Procura por <tr class="torrent"> com título, tamanho, seeds, leech, magnet
-        pattern = re.compile(
-            r'<tr class="torrent[^"]*"[^>]*>.*?'  # Linha de torrent
-            r'<a href="/torrents\.php\?id=(\d+)"[^>]*title="([^"]*)".*?>([^<]*)</a>.*?'  # ID, título (title attr + texto)
-            r'<td class="size">([^<]+)</td>.*?'   # Tamanho (classe 'size')
-            r'<td class="seed">(\d+)</td>.*?'     # Seeds (classe 'seed' ou similar)
-            r'<td class="leech">(\d+)</td>.*?'    # Leech (classe 'leech')
-            r'<a href="(magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^"]*)"[^>]*title="Download magnet"',  # Magnet link
-            re.DOTALL | re.IGNORECASE
-        )
-
-        matches = pattern.finditer(page)
-        for match in matches:
-            torrent_id, title_attr, title_text, size, seeds, leech, magnet = match.groups()
-
-            # Usa title_attr se disponível, senão title_text
-            title = html.unescape(title_attr or title_text).strip()
-            title = re.sub(r'<[^>]+>', '', title)  # Remove tags residuais
-
-            # Item para qBittorrent
-            item = {
-                'name': f"[Comando.la] {title}",
-                'size': size.strip(),
-                'seeds': int(seeds or 0),
-                'leech': int(leech or 0),
-                'link': magnet,  # Magnet direto
-                'desc_link': f"{self.url}/torrents.php?id={torrent_id}",
-                'engine_url': self.url
-            }
-            prettyPrinter(item)
-
-    def download_torrent(self, info):
-        """
-        Download de magnet ou .torrent
-        """
-        from helpers import download_file
-        if info.startswith('magnet:'):
-            download_file(None, info)  # qBittorrent lida com magnet
-        else:
-            try:
-                torrent_data = retrieve_url(info)
-                download_file(torrent_data)
-            except:
-                print("Falha no download do torrent.")
+if __name__ == "__main__":
+    # Teste rápido
+    if len(sys.argv) > 1:
+        query = " ".join(sys.argv[1:])
+        results = search(query)
+        for r in results[:5]:
+            print(f"{r['name']} | {r['size']} | {r['link'][:70]}...")
