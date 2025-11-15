@@ -1,92 +1,107 @@
 # -*- coding: utf-8 -*-
 """
-qBittorrent Search Plugin for comando.to
-Compatible with qBittorrent 5.1.x and Python 3.9+
+qBittorrent Search Plugin - comando.to
+Autor: @FlavioPessoa_
+Versão: 1.1.0
+Compatível: qBittorrent 5.1.x | Python 3.9+
 """
 
 import re
 import sys
 import urllib.parse
 from html import unescape
-from typing import List, Dict, Any
+from typing import List
 
+# qBittorrent Nova Search API
 try:
     from nova_search import SearchPlugin, SearchResult
 except ImportError:
-    # Fallback para ambiente de desenvolvimento
-    class SearchPlugin:
-        def search(self, pattern: str, category: str = "") -> List['SearchResult']: ...
-    
+    # Fallback para desenvolvimento
+    class SearchPlugin: pass
     class SearchResult:
-        def __init__(self, name: str, descr: str, size: int, seeds: int, leech: int, link: str, hash: str = ""): ...
+        def __init__(self, name, descr, size, seeds, leech, link, hash=""):
+            self.name = name
+            self.descr = descr
+            self.size = size
+            self.seeds = seeds
+            self.leech = leech
+            self.link = link
+            self.hash = hash
 
+# HTTP Client seguro (ignora SSL se necessário)
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 http = urllib3.PoolManager(
-    cert_reqs='CERT_NONE',
-    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    timeout=urllib3.Timeout(connect=5.0, read=15.0),
+    headers={
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                      'AppleWebKit/537.36 (KHTML, like Gecko) '
+                      'Chrome/130.0.0.0 Safari/537.36'
+    },
+    cert_reqs='CERT_NONE'
 )
+
 
 class ComandoSearchPlugin(SearchPlugin):
     name = "Comando.to"
-    author = "Plugin by @FlavioPessoa_"
-    version = "1.0.2"
-    supported_categories = ["all", "movies", "tv", "anime", "apps", "games", "music"]
+    author = "@FlavioPessoa_"
+    version = "1.1.0"
+    supported_categories = ["all", "movies", "tv", "anime", "games", "apps", "music"]
 
     base_url = "https://comando.to"
-    search_url = f"{base_url}/busca/"
+    search_path = "/busca/"
 
     def search(self, pattern: str, category: str = "all") -> List[SearchResult]:
-        if not pattern.strip():
+        if not pattern or not pattern.strip():
             return []
 
         query = urllib.parse.quote_plus(pattern.strip())
-        url = f"{self.search_url}{query}"
+        url = f"{self.base_url}{self.search_path}{query}"
 
         try:
-            response = http.request('GET', url, timeout=10.0)
-            if response.status != 200:
+            resp = http.request('GET', url)
+            if resp.status != 200:
                 return []
 
-            html = response.data.decode('utf-8', errors='ignore')
-            return self.parse_results(html)
+            html = resp.data.decode('utf-8', errors='replace')
+            return self._parse_page(html)
 
         except Exception as e:
-            print(f"[Comando.to] Erro na busca: {e}", file=sys.stderr)
+            print(f"[comando.to] Erro na requisição: {e}", file=sys.stderr)
             return []
 
-    def parse_results(self, html: str) -> List[SearchResult]:
+    def _parse_page(self, html: str) -> List[SearchResult]:
         results = []
-        pattern = re.compile(
-            r'<div class="post">.*?'
-            r'<a href="(https?://[^"]+)" title="([^"]+)">.*?'
-            r'<div class="post-info">.*?'
+
+        # Regex para cada resultado
+        item_pattern = re.compile(
+            r'<div class="post">\s*'
+            r'<a href="(https?://[^"]+)" title="([^"]+)".*?>.*?'
             r'<span class="size">Tamanho: ([^<]+)</span>.*?'
             r'<span class="seeds">Seeds: (\d+)</span>.*?'
             r'<span class="leechers">Leechers: (\d+)</span>',
-            re.DOTALL
+            re.DOTALL | re.IGNORECASE
         )
 
-        for match in pattern.finditer(html):
-            link = match.group(1)
-            name = unescape(match.group(2).strip())
-            size_str = match.group(3).strip()
-            seeds = int(match.group(4))
-            leech = int(match.group(5))
+        for m in item_pattern.finditer(html):
+            detail_url = m.group(1)
+            title = unescape(m.group(2)).strip()
+            size_str = m.group(3).strip()
+            seeds = int(m.group(4))
+            leech = int(m.group(5))
 
-            size = self.parse_size(size_str)
-            descr = f"Tamanho: {size_str} | Seeds: {seeds} | Leechers: {leech}"
+            size_bytes = self._parse_size(size_str)
+            descr = f"{size_str} • S:{seeds} L:{leech}"
 
-            # Extrai magnet ou .torrent
-            torrent_link = self.extract_torrent_link(link)
+            torrent_link = self._get_torrent_link(detail_url)
             if not torrent_link:
                 continue
 
             results.append(SearchResult(
-                name=name,
+                name=title,
                 descr=descr,
-                size=size,
+                size=size_bytes,
                 seeds=seeds,
                 leech=leech,
                 link=torrent_link
@@ -94,21 +109,21 @@ class ComandoSearchPlugin(SearchPlugin):
 
         return results
 
-    def extract_torrent_link(self, detail_url: str) -> str:
+    def _get_torrent_link(self, detail_url: str) -> str:
         try:
-            response = http.request('GET', detail_url, timeout=10.0)
-            if response.status != 200:
+            resp = http.request('GET', detail_url, timeout=10.0)
+            if resp.status != 200:
                 return ""
 
-            html = response.data.decode('utf-8', errors='ignore')
+            html = resp.data.decode('utf-8', errors='replace')
 
-            # Procura por link de magnet
-            magnet = re.search(r'href="(magnet:\?[^"]+)"', html)
+            # 1. Magnet link
+            magnet = re.search(r'href="(magnet:\?[^"]+)"', html, re.IGNORECASE)
             if magnet:
                 return magnet.group(1)
 
-            # Procura por link .torrent
-            torrent = re.search(r'href="(https?://[^"]+\.torrent)"', html)
+            # 2. Arquivo .torrent
+            torrent = re.search(r'href="(https?://[^"]+\.torrent)"', html, re.IGNORECASE)
             if torrent:
                 return torrent.group(1)
 
@@ -116,24 +131,18 @@ class ComandoSearchPlugin(SearchPlugin):
         except:
             return ""
 
-    def parse_size(self, size_str: str) -> int:
-        size_str = size_str.replace(' ', '').upper()
-        multipliers = {
-            'KB': 1024,
-            'MB': 1024 ** 2,
-            'GB': 1024 ** 3,
-            'TB': 1024 ** 4,
-            'B': 1
-        }
-        for unit, multiplier in multipliers.items():
+    def _parse_size(self, size_str: str) -> int:
+        size_str = size_str.upper().replace(' ', '').replace(',', '.')
+        units = {'B': 1, 'KB': 1024, 'MB': 1024**2, 'GB': 1024**3, 'TB': 1024**4}
+        for unit, mul in units.items():
             if unit in size_str:
                 try:
-                    num = float(size_str.replace(unit, '').replace(',', '.'))
-                    return int(num * multiplier)
+                    value = float(re.sub(f'[^{unit}0-9.]', '', size_str))
+                    return int(value * mul)
                 except:
                     return 0
         return 0
 
 
-# Necessário para o qBittorrent
+# Exporta o plugin
 search_plugin = ComandoSearchPlugin()
