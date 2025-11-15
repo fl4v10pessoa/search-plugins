@@ -1,3 +1,4 @@
+# VERSION: 1.2
 # -*- coding: utf-8 -*-
 """
 qBittorrent Search Plugin
@@ -16,7 +17,7 @@ import http.client
 # Configurações do qBittorrent Search Plugin
 PLUGIN_NAME = "Comando.la"
 PLUGIN_AUTHOR = "fl4v10pe550a"
-PLUGIN_VERSION = "1.1"
+PLUGIN_VERSION = "1.2"
 PLUGIN_DESCRIPTION = "Busca torrents de filmes e séries no Comando.la"
 PLUGIN_URL = "https://comando.la"
 
