@@ -1,4 +1,4 @@
-# VERSION: 1.1
+# VERSION: 1.2
 # AUTHORS: mauricci
 
 import re
@@ -12,7 +12,7 @@ from novaprinter import prettyPrinter
 
 
 class comando:
-    url = 'https://comando.la'
+    url = 'https://redetorrent.com/'
     name = 'Comando'
     supported_categories = {'all': '0'}
 
