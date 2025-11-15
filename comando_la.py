@@ -2,7 +2,7 @@
 """
 qBittorrent Search Plugin
 Name: Comando.la
-Author: Grok (adaptado para @FlavioPessoa_)
+Author: @FlavioPessoa
 Website: https://comando.la
 """
 
@@ -15,8 +15,8 @@ import http.client
 
 # Configurações do qBittorrent Search Plugin
 PLUGIN_NAME = "Comando.la"
-PLUGIN_AUTHOR = "Grok"
-PLUGIN_VERSION = "1.0"
+PLUGIN_AUTHOR = "fl4v10pe550a"
+PLUGIN_VERSION = "1.1"
 PLUGIN_DESCRIPTION = "Busca torrents de filmes e séries no Comando.la"
 PLUGIN_URL = "https://comando.la"
 
