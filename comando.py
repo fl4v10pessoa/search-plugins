@@ -1,112 +1,139 @@
-# VERSION: 1.22
-# AUTHORS: nindogo
-# CONTRIBUTORS: Diego de las Heras (ngosang@hotmail.es)
+# -*- coding: utf-8 -*-
+"""
+qBittorrent Search Plugin for comando.to
+Compatible with qBittorrent 5.1.x and Python 3.9+
+"""
 
-import http.client
 import re
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
-from datetime import datetime, timedelta
-from html.parser import HTMLParser
-from typing import Callable, Dict, List, Mapping, Match, Tuple, Union
+from html import unescape
+from typing import List, Dict, Any
 
-from helpers import retrieve_url
-from novaprinter import prettyPrinter
+try:
+    from nova_search import SearchPlugin, SearchResult
+except ImportError:
+    # Fallback para ambiente de desenvolvimento
+    class SearchPlugin:
+        def search(self, pattern: str, category: str = "") -> List['SearchResult']: ...
+    
+    class SearchResult:
+        def __init__(self, name: str, descr: str, size: int, seeds: int, leech: int, link: str, hash: str = ""): ...
 
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-class comando:
-    name = "Comando"
-    url = 'https://comando.la/'
-    supported_categories = {'all': 'all', 'tv': 'tv'}
+http = urllib3.PoolManager(
+    cert_reqs='CERT_NONE',
+    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+)
 
-    class MyHtmlParser(HTMLParser):
-        A, TD, TR, TABLE = ('a', 'td', 'tr', 'table')
+class ComandoSearchPlugin(SearchPlugin):
+    name = "Comando.to"
+    author = "Plugin by @FlavioPessoa_"
+    version = "1.0.2"
+    supported_categories = ["all", "movies", "tv", "anime", "apps", "games", "music"]
 
-        """ Sub-class for parsing results """
-        def __init__(self, url: str) -> None:
-            HTMLParser.__init__(self)
-            self.url = url
+    base_url = "https://comando.to"
+    search_url = f"{base_url}/busca/"
 
-            now = datetime.now()
-            self.date_parsers: Mapping[str, Callable[[Match[str]], datetime]] = {
-                r"(\d+)h\s+(\d+)m": lambda m: now - timedelta(hours=int(m[1]), minutes=int(m[2])),
-                r"(\d+)d\s+(\d+)h": lambda m: now - timedelta(days=int(m[1]), hours=int(m[2])),
-                r"(\d+)\s+weeks?": lambda m: now - timedelta(weeks=int(m[1])),
-                r"(\d+)\s+mo": lambda m: now - timedelta(days=int(m[1]) * 30),
-                r"(\d+)\s+years?": lambda m: now - timedelta(days=int(m[1]) * 365),
-            }
-            self.in_table_row = False
-            self.current_item: Dict[str, object] = {}
+    def search(self, pattern: str, category: str = "all") -> List[SearchResult]:
+        if not pattern.strip():
+            return []
 
-        def handle_starttag(self, tag: str, attrs: List[Tuple[str, Union[str, None]]]) -> None:
-            def getStr(d: Mapping[str, Union[str, None]], key: str) -> str:
-                value = d.get(key, '')
-                return value if value is not None else ''
+        query = urllib.parse.quote_plus(pattern.strip())
+        url = f"{self.search_url}{query}"
 
-            params = dict(attrs)
-
-            if (params.get('class') == 'forum_header_border'
-                    and params.get('name') == 'hover'):
-                self.in_table_row = True
-                self.current_item = {}
-                self.current_item['seeds'] = -1
-                self.current_item['leech'] = -1
-                self.current_item['size'] = -1
-                self.current_item['engine_url'] = self.url
-                self.current_item['pub_date'] = -1
-
-            if (tag == self.A
-                    and self.in_table_row and params.get('class') == 'magnet'):
-                self.current_item['link'] = params.get('href')
-
-            if (tag == self.A
-                    and self.in_table_row and params.get('class') == 'epinfo'):
-                self.current_item['desc_link'] = self.url + getStr(params, 'href')
-                self.current_item['name'] = getStr(params, 'title').split(' (')[0]
-
-        def handle_data(self, data: str) -> None:
-            data = data.replace(',', '')
-            if (self.in_table_row
-                    and (data.endswith(' KB') or data.endswith(' MB') or data.endswith(' GB'))):
-                self.current_item['size'] = data
-
-            elif self.in_table_row and data.isnumeric():
-                self.current_item['seeds'] = int(data)
-
-            elif self.in_table_row:  # Check for a relative time
-                for pattern, calc in self.date_parsers.items():
-                    m = re.match(pattern, data)
-                    if m:
-                        self.current_item["pub_date"] = int(calc(m).timestamp())
-                        break
-
-        def handle_endtag(self, tag: str) -> None:
-            if self.in_table_row and tag == self.TR:
-                prettyPrinter(self.current_item)  # type: ignore[arg-type] # refactor later
-                self.in_table_row = False
-
-    def do_query(self, what: str) -> str:
-        url = f"{self.url}/search/{what.replace('%20', '-')}"
-        data = b"layout=def_wlinks"
         try:
-            return retrieve_url(url, request_data=data)
-        except TypeError:
-            # Older versions of retrieve_url did not support request_data/POST, se we must do the
-            # request ourselves...
-            user_agent = 'Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0'
-            req = urllib.request.Request(url, data, {'User-Agent': user_agent})
-            try:
-                response: http.client.HTTPResponse = urllib.request.urlopen(req)  # nosec B310 # pylint: disable=consider-using-with
-                return response.read().decode('utf-8')
-            except urllib.error.URLError as errno:
-                print(f"Connection error: {errno.reason}", file=sys.stderr)
+            response = http.request('GET', url, timeout=10.0)
+            if response.status != 200:
+                return []
+
+            html = response.data.decode('utf-8', errors='ignore')
+            return self.parse_results(html)
+
+        except Exception as e:
+            print(f"[Comando.to] Erro na busca: {e}", file=sys.stderr)
+            return []
+
+    def parse_results(self, html: str) -> List[SearchResult]:
+        results = []
+        pattern = re.compile(
+            r'<div class="post">.*?'
+            r'<a href="(https?://[^"]+)" title="([^"]+)">.*?'
+            r'<div class="post-info">.*?'
+            r'<span class="size">Tamanho: ([^<]+)</span>.*?'
+            r'<span class="seeds">Seeds: (\d+)</span>.*?'
+            r'<span class="leechers">Leechers: (\d+)</span>',
+            re.DOTALL
+        )
+
+        for match in pattern.finditer(html):
+            link = match.group(1)
+            name = unescape(match.group(2).strip())
+            size_str = match.group(3).strip()
+            seeds = int(match.group(4))
+            leech = int(match.group(5))
+
+            size = self.parse_size(size_str)
+            descr = f"Tamanho: {size_str} | Seeds: {seeds} | Leechers: {leech}"
+
+            # Extrai magnet ou .torrent
+            torrent_link = self.extract_torrent_link(link)
+            if not torrent_link:
+                continue
+
+            results.append(SearchResult(
+                name=name,
+                descr=descr,
+                size=size,
+                seeds=seeds,
+                leech=leech,
+                link=torrent_link
+            ))
+
+        return results
+
+    def extract_torrent_link(self, detail_url: str) -> str:
+        try:
+            response = http.request('GET', detail_url, timeout=10.0)
+            if response.status != 200:
+                return ""
+
+            html = response.data.decode('utf-8', errors='ignore')
+
+            # Procura por link de magnet
+            magnet = re.search(r'href="(magnet:\?[^"]+)"', html)
+            if magnet:
+                return magnet.group(1)
+
+            # Procura por link .torrent
+            torrent = re.search(r'href="(https?://[^"]+\.torrent)"', html)
+            if torrent:
+                return torrent.group(1)
+
+            return ""
+        except:
             return ""
 
-    def search(self, what: str, cat: str = 'all') -> None:
-        eztv_html = self.do_query(what)
+    def parse_size(self, size_str: str) -> int:
+        size_str = size_str.replace(' ', '').upper()
+        multipliers = {
+            'KB': 1024,
+            'MB': 1024 ** 2,
+            'GB': 1024 ** 3,
+            'TB': 1024 ** 4,
+            'B': 1
+        }
+        for unit, multiplier in multipliers.items():
+            if unit in size_str:
+                try:
+                    num = float(size_str.replace(unit, '').replace(',', '.'))
+                    return int(num * multiplier)
+                except:
+                    return 0
+        return 0
 
-        eztv_parser = self.MyHtmlParser(self.url)
-        eztv_parser.feed(eztv_html)
-        eztv_parser.close()
+
+# Necessário para o qBittorrent
+search_plugin = ComandoSearchPlugin()
