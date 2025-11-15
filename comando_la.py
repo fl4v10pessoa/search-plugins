@@ -37,7 +37,7 @@ class comando_la(object):
         Você precisa obter o cookie 'session' após logar no navegador.
         """
         # === CONFIGURE SEU COOKIE AQUI ===
-        cookie_session = 'SUA_SESSION_AQUI'  # ← SUBSTITUA!
+        cookie_session = 'eyJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiZTA1YjUyZjJmYmZjYzczMDc2ZmIxZTFjM2IzNWJhY2E0ZDRhYjI0YWFkZmRmMzY0OGQzZDM3ZjRkMGIzNWRhMSIsIm5iZiI6MTc2MjY1MzYwNy4wNTgxMzQ4LCJ2ZXJzaW9uIjoxLCJleHAiOjE3NjQ2OTQ0MTUsInByaXZpbGVnZSI6MSwiX2NzcmZfdG9rZW4iOiJPb2JkRXlscU9HeGUzalJtMWVvdFR6ODdrdjZKMlNSMDdPVklMMkdZSldFPSIsImFjY291bnRfaWQiOiI2OGM4Yzk0Mzk5YTNiZTJjNjkyMTkyY2UiLCJkYl9pZCI6ImUwNWI1MmYyZmJmY2M3MzA3NmZiMWUxYzNiMzViYWNhNGQ0YWIyNGFhZGZkZjM2NDhkM2QzN2Y0ZDBiMzVkYTEiLCJzdGFmZiI6ZmFsc2UsInVwZGF0ZWRfYXQiOjE3NjI2NTM1OTl9.H5OnElsoG5ouayM4g2Af7niygEYMYTOXNJHQqNOxhRw'  # ← SUBSTITUA!
         # =================================
 
         if not cookie_session or 'SUA_SESSION_AQUI' in cookie_session:
