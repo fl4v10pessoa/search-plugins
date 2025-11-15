@@ -15,7 +15,7 @@ import re  # Para parsing simples
 
 class SearchPlugin:
     # URL base do mirror (ajuste se necessário)
-    page_url = 'https://bludv.to/?s={0}'
+    page_url = 'https://bludv.to/'
     
     def __init__(self):
         pass
