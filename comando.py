@@ -1,5 +1,5 @@
-# VERSION: 1.0
-# AUTHORS: fl4v10pessoa (https://github.com/fl4v10pessoa)
+# VERSION: 1.2
+# AUTHORS: BurningMop (burning.mop@yandex.com)
 
 # LICENSING INFORMATION
 # Permission is hereby granted, free of charge, to any person obtaining a copy
