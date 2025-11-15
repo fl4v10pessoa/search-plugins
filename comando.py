@@ -1,4 +1,4 @@
-# VERSION: 1.2
+# VERSION: 1.4
 # AUTHORS: BurningMop (burning.mop@yandex.com)
 
 # LICENSING INFORMATION
@@ -20,242 +20,173 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import math
 import re
-import time
 from html.parser import HTMLParser
-
+import time
+import threading
 from helpers import download_file, retrieve_url
 from novaprinter import prettyPrinter, anySizeToBytes
+
 
 class comando(object):
     url = 'https://comando.la/'
     name = 'Comando'
     supported_categories = {
-        'all': 'all'
-    }
-
-    results_regex = r'Found\s+<span.+>\d+<\/span>'
+        'all':'All', 
+        'movies':'Movies', 
+        'tv': 'TV', 
+        'music':'Music', 
+        'games':'Games', 
+        'anime':'Anime', 
+        'software':'Apps'
+        }
+    
+    next_page_regex = r'<a.*?>»<\/a>'
+    title_regex = r'<title>Search for.*<\/title>'
+    has_next_page = True
 
     class MyHtmlParser(HTMLParser):
-
+    
         def error(self, message):
             pass
-
-        MAIN, DIV, SPAN, A = ('main', 'div', 'span', 'a')
-
-        search_results_main_class_name = 'mx-auto'
-        search_results_list_class_name = 'space-y-4'
-        search_results_item_container_class_name = 'bg-white'
-        search_results_item_class_name = 'items-start'
-        search_results_torrent_info_class_name = 'flex-1'
-        search_results_item_metadata_class_name = 'items-center'
-        search_results_item_metadata_numbers_class_name = 'font-medium'
-        search_results_item_download_class_name = 'space-y-2'
-        search_results_item_mobile_download_class_name = 'sm:hidden'
-
+    
+        DIV, TABLE, TBODY, TR, TD, A, SPAN, I, B = ('div', 'table', 'tbody', 'tr', 'td', 'a', 'span', 'i', 'b')
+    
         def __init__(self, url):
             HTMLParser.__init__(self)
+            self.magnet_regex = r'href=["\']magnet:.+?["\']'
 
             self.url = url
             self.row = {}
-
             self.column = 0
-            self.metadata = 0
-            self.results = 0
 
-            self.insideMain = False
-            self.insideSearchResultList = False
-            self.insideSearchResultItemContainer = False
-            self.insideSearchResultItem = False
-            self.insideTorrentInfo = False
-            self.insideName = False
-            self.insideStats = False
-            self.insideSwarm = False
-            self.insideDownload = False
-            self.insideMobileDownload = False
-            self.shouldGetName = False
-            self.shouldGetData = False
+            self.foundTable = False
+            self.foundTableTbody = False
+            self.insideRow = False
+            self.insideCell = False
 
-            self.cssClasses = []
+            self.shouldParseName = False
+            self.shouldGetCategory = False
+            self.shouldGetSize = False
+            self.shouldGetSeeds = False
+            self.shouldGetLeechs = False
+
+            self.alreadyParseName = False
+            self.alreadyParsesLink = False
 
         def handle_starttag(self, tag, attrs):
             params = dict(attrs)
             cssClasses = params.get('class', '')
+            elementId = params.get('id', '')
 
-            if tag == self.MAIN and self.search_results_main_class_name in cssClasses:
-                self.insideMain = True
-                return
+            if tag == self.TABLE:
+                self.foundTable = True
 
-            if self.insideMain and tag == self.DIV and self.search_results_list_class_name in cssClasses:
-                self.insideSearchResultList = True
-                return
+            if tag == self.TBODY and self.foundTable:
+                self.foundTableTbody = True
 
-            if self.insideSearchResultList and tag == self.DIV and self.search_results_item_container_class_name in cssClasses:
-                self.insideSearchResultItemContainer = True
-                return
+            if tag == self.TR and self.foundTableTbody:
+                self.column = 0
+                self.insideRow = True
 
-            if self.insideSearchResultItemContainer and tag == self.DIV and self.search_results_item_class_name in cssClasses:
-                self.insideSearchResultItem = True
-                return
-
-            if self.insideSearchResultItem and tag == self.DIV and self.search_results_torrent_info_class_name in cssClasses:
-                self.insideTorrentInfo = True
-                return
-
-            if self.insideSearchResultItem and tag == self.DIV and self.search_results_item_metadata_class_name in cssClasses:
-                if self.metadata == 0:
-                    self.insideName = True
-                    self.metadata = 1
-                    return
-                if self.metadata == 1:
-                    # stats
-                    self.insideName = False
-                    self.insideStats = True
-                    self.column = 0
-                    self.metadata = 2
-                    return
-                if self.metadata == 2:
-                    # swarm
-                    self.insideStats = False
-                    self.insideSwarm = True
-                    self.column = 0
-                    self.metadata = 3
-                    return
-
-            if self.insideName and tag == self.A:
-                self.shouldGetName = True
-                href = params.get('href')
-                link = f'{self.url}{href}'
-                self.row['desc_link'] = link
-                return
-
-            if self.insideStats and tag == self.SPAN and len(cssClasses) == 0:
+            if tag == self.TD and self.insideRow:
                 self.column += 1
-                self.shouldGetData = True
-                return
+                self.insideCell = True
 
-            if self.insideSwarm and tag == self.SPAN and self.search_results_item_metadata_numbers_class_name in cssClasses:
-                self.column += 1
-                self.shouldGetData = True
-                return
+            if self.insideCell:
+                if self.column == 2 and tag == self.A and not self.alreadyParseName :
+                    self.shouldParseName = True
+                    href = params.get('href')
+                    link = f'{self.url}/{href}'
+                    self.row['desc_link'] = link
 
-            if self.insideSearchResultItem and tag == self.DIV and self.search_results_item_download_class_name in cssClasses:
-                self.insideDownload = True
-                return
+                    torrent_page = retrieve_url(link)
+                    matches = re.finditer(self.magnet_regex, torrent_page, re.MULTILINE)
+                    magnet_urls = [x.group() for x in matches]
+                    self.row['link'] = magnet_urls[0].split('"')[1]
 
-            if self.insideSearchResultItemContainer and tag == self.DIV and self.search_results_item_mobile_download_class_name in cssClasses:
-                self.insideMobileDownload = True
-                return
+                if self.column == 3 and tag == self.A:
+                    self.shouldGetCategory = True                 
 
-            if self.insideDownload and tag == self.A:
-                href = params.get('href')
-                if href.startswith('magnet'):
-                    self.row['link'] = href
-                return
+                if self.column == 6:
+                    self.shouldGetSize = True
+
+                if self.column == 7:
+                    self.shouldGetSeeds = True
+
+                if self.column == 8:
+                    self.shouldGetLeechs = True                    
 
         def handle_data(self, data):
-            if self.shouldGetName:
-                self.row['name'] = data.strip()
-                self.shouldGetName = False
-                return
+            if self.shouldParseName:
+                self.row['name'] = data
+                self.shouldParseName = False
+                self.alreadyParseName = True
 
-            if self.insideStats and self.shouldGetData:
-                if self.column == 2:
-                    self.row['size'] = data.replace(' ', '')
-                    self.shouldGetData = False
-                    return
-                if self.column == 3:
-                    self.row['pub_date'] = data.strip()
-                    self.shouldGetData = False
-                    return
+            if self.shouldGetCategory:
+                self.row['name'] += f' ({data.strip()})'
+                self.shouldGetCategory = False
 
-            if self.insideSwarm and self.shouldGetData:
-                if self.column == 1:
-                    self.row['seeds'] = data
-                    self.shouldGetData = False
-                    return
-                if self.column == 2:
-                    self.row['leech'] = data
-                    self.shouldGetData = False
-                    return
+            if self.shouldGetSize:
+                self.row['size'] = data.replace(',', '.').replace('\xa0', ' ')
+                self.shouldGetSize = False
+
+            if self.shouldGetSeeds:    
+                self.row['seeds']  = data
+                self.shouldGetSeeds = False
+
+            if self.shouldGetLeechs:    
+                self.row['leech']  = data
+                self.shouldGetLeechs = False
 
         def handle_endtag(self, tag):
-            if self.insideSwarm and tag == self.DIV:
-                self.insideSwarm = False
-                self.column = 0
-                self.metadata = 0
-                return
+            if tag == self.TD:
+                self.insideCell = False
 
-            if self.insideTorrentInfo and tag == self.DIV and not self.insideName and not self.insideStats and not self.insideSwarm:
-                self.insideTorrentInfo = False
-                return
-
-            if self.insideDownload and tag == self.DIV:
-                self.insideDownload = False
-                return
-
-            if self.insideMobileDownload and tag == self.DIV:
-                self.insideMobileDownload = False
-                return
-
-            if (tag == self.DIV
-                    and not self.insideDownload
-                    and not self.insideTorrentInfo
-                    and not self.insideMobileDownload
-                    and self.insideSearchResultItem):
-                self.insideSearchResultItem = False
-                return
-
-            if tag == self.DIV and not self.insideSearchResultItem and self.insideSearchResultItemContainer:
-                self.insideSearchResultItemContainer = False
+            if tag == self.TR and self.foundTableTbody:
                 self.row['engine_url'] = self.url
                 prettyPrinter(self.row)
                 self.column = 0
-                self.metadata = 0
-                return
+                self.row = {}
+                self.insideRow = False
+                self.alreadyParseName = False
 
-            if tag == self.DIV and not self.insideSearchResultItem and self.insideSearchResultList:
-                self.insideSearchResultList = False
-                return
-
-            if tag == self.MAIN and self.insideMain:
-                self.insideMain = False
-                return
 
     def download_torrent(self, info):
         print(download_file(info))
 
-    def search(self, what, cat='all'):
-        parser = self.MyHtmlParser(self.url)
-        what = what.replace('%20', '+')
-        what = what.replace(' ', '+')
-        page = 1
-
-        page_url = f'{self.url}/search?q={what}&page={page}'
-        retrievedHtml = retrieve_url(page_url)
-        results_matches = re.finditer(self.results_regex, retrievedHtml, re.MULTILINE)
-        results_array = [x.group() for x in results_matches]
-
-        if len(results_array) > 0:
-            results = int(re.search(r'\d+', results_array[0]).group(0))
-            pages = math.ceil(results / 20)
+    def getPageUrl(self, what, cat, page):
+        if not cat == 'All':
+            return f'{self.url}/get-posts/order:-se:category:{cat}:keywords:{what}/?page={page}'
         else:
-            pages = 0
+            return f'{self.url}/get-posts/order:-se:keywords:{what}/?page={page}'
 
-        page += 1
-
-        if pages > 0:
+    def threaded_search(self, page, what, cat):
+        page_url = self.getPageUrl(what, cat, page)
+        retrievedHtml = retrieve_url(page_url)
+        next_page_matches = re.finditer(self.next_page_regex, retrievedHtml, re.MULTILINE)
+        title_matches = re.finditer(self.title_regex, retrievedHtml, re.MULTILINE)
+        is_result_page = [x.group() for x in title_matches]
+        next_page = [x.group() for x in next_page_matches]
+        if len(next_page) == 0:
+            self.has_next_page = False
+        if is_result_page:
+            parser = self.MyHtmlParser(self.url)
             parser.feed(retrievedHtml)
+            parser.close()
 
-            while page <= min(pages, 10):
-                page_url = f'{self.url}/search?q={what}&page={page}'
+    def search(self, what, cat = 'all'):
+        page = 1
+        search_category = self.supported_categories[cat]
 
-                try:
-                    retrievedHtml = retrieve_url(page_url)
-                    parser.feed(retrievedHtml)
-                except:
-                    pass
-                page += 1
-                time.sleep(0.75)
-        parser.close()
+        threads = []
+        while self.has_next_page:
+            t = threading.Thread(args=(page, what, search_category), target=self.threaded_search)
+            t.start()
+            time.sleep(0.5)
+            threads.append(t)
+    
+            page += 1
+
+        for t in threads:
+            t.join()
