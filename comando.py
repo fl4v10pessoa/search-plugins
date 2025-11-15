@@ -1,298 +1,129 @@
 # VERSION: 1.1
-# AUTHORS: BurningMop (burning.mop@yandex.com)
-
-# LICENSING INFORMATION
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+# AUTHORS: mauricci
 
 import re
-import json
-import time
-import base64
-import threading
-import urllib.request
-import urllib.parse
+from datetime import datetime
 from html.parser import HTMLParser
+from typing import Any, Dict, List, Mapping, Tuple, Union
+from urllib.parse import unquote
 
-from helpers import download_file, retrieve_url
+from helpers import retrieve_url
 from novaprinter import prettyPrinter
 
 
-class comando(object):
-    url = "https://comando.la"
-    name = "Comando"
-    supported_categories = {"all": "all"}
+class comando:
+    url = 'https://comando.la'
+    name = 'Comando'
+    supported_categories = {'all': '0'}
 
-    pagination_regex = r"<div>Page\s\d\sof\s\d+</div>"
+    class MyHTMLParser(HTMLParser):
 
-    class MyHtmlParser(HTMLParser):
-        def error(self, message):
-            pass
-
-        DIV, A, SPAN, I, B = ("div", "a", "span", "i", "b")
-
-        def __init__(self, url):
+        def __init__(self, url: str) -> None:
             HTMLParser.__init__(self)
             self.url = url
-            self.row = {}
-            self.rows = []
+            self.insideResults = False
+            self.insideDataDiv = False
+            self.pageComplete = False
+            self.spanCount = -1
+            self.infoMap = {
+                "name": 0,
+                "torrLink": 0,
+                "seeds": 2,
+                "leech": 3,
+                "pub_date": 4,
+                "size": 5,
+            }
+            self.fullResData: List[object] = []
+            self.pageRes: List[object] = []
+            self.singleResData = self.get_single_data()
 
-            self.foundResults = False
-            self.insideRow = False
-            self.insideTorrentData = False
-            self.insideTorrentName = False
-            self.insideMetaData = False
-            self.insideLabelCell = False
-            self.insideSizeCell = False
-            self.insideSeedCell = False
-            self.insideLeechCell = False
-            self.shouldAddBrackets = False
-            self.shouldAddName = False
-            self.web_seed = False
-            self.shouldGetDate = False
-            self.magnet_regex = r'href=["\']magnet:.+?["\']'
-            self.has_web_regex = (
-                r"(sxyprn\.com[^\w]*?post[^\w]*?[\w]*?\.html)"
-            )
+        def get_single_data(self) -> Dict[str, Any]:
+            return {
+                'name': '-1',
+                'seeds': '-1',
+                'leech': '-1',
+                'size': '-1',
+                'link': '-1',
+                'desc_link': '-1',
+                'engine_url': self.url,
+                'pub_date': '-1',
+            }
 
-        def preda(self, arg):
-            arg[5] = int(arg[5])
-            arg[5] -= int(self.ssut51(arg[6])) + int(self.ssut51(arg[7]))
-            arg[5] = str(arg[5])
-            return arg
+        def handle_starttag(self, tag: str, attrs: List[Tuple[str, Union[str, None]]]) -> None:
+            def getStr(d: Mapping[str, Union[str, None]], key: str) -> str:
+                value = d.get(key, '')
+                return value if value is not None else ''
 
-        def ssut51(self, arg):
-            str_num = ''.join(filter(str.isdigit, arg))
-            sut = 0
-            for char in str_num:
-                sut += int(char)
-            return sut
+            attributes = dict(attrs)
+            if tag == 'div' and 'nav' in getStr(attributes, 'id'):
+                self.pageComplete = True
+            if tag == 'div' and attributes.get('id', '') == 'similarfiles':
+                self.insideResults = True
+            if tag == 'div' and self.insideResults and 'gac_bb' not in getStr(attributes, 'class'):
+                self.insideDataDiv = True
+            elif tag == 'span' and self.insideDataDiv and 'verified' != attributes.get('title', ''):
+                self.spanCount += 1
+            if self.insideDataDiv and tag == 'a' and len(attrs) > 0:
+                if self.infoMap['torrLink'] == self.spanCount and 'href' in attributes:
+                    self.singleResData['link'] = self.url + getStr(attributes, 'href')
+                if self.infoMap['name'] == self.spanCount and 'href' in attributes:
+                    self.singleResData['desc_link'] = self.url + getStr(attributes, 'href')
 
-        def boo(self, ss, es):
-            b = base64.b64encode((ss + "-" + "sxyprn.com" + "-" + es).encode()).decode()
-            return b.replace('+', '-').replace('/', '_').replace('=', '.')
+        def handle_endtag(self, tag: str) -> None:
+            if not self.pageComplete:
+                if tag == 'div':
+                    self.insideDataDiv = False
+                    self.spanCount = -1
+                    if len(self.singleResData) > 0:
+                        # ignore trash stuff
+                        if self.singleResData['name'] != '-1' \
+                                and self.singleResData['size'] != '-1' \
+                                and self.singleResData['name'].lower() != 'nome':
+                            # ignore those with link and desc_link equals to -1
+                            if self.singleResData['desc_link'] != '-1' \
+                                    or self.singleResData['link'] != '-1':
+                                try:
+                                    date_string = self.singleResData['pub_date']
+                                    date = datetime.strptime(date_string, '%Y-%m-%d %H:%M:%S')
+                                    self.singleResData['pub_date'] = int(date.timestamp())
+                                except Exception:  # pylint: disable=broad-exception-caught
+                                    pass
+                                try:
+                                    prettyPrinter(self.singleResData)  # type: ignore[arg-type] # refactor later
+                                except Exception:  # pylint: disable=broad-exception-caught
+                                    print(self.singleResData)
+                                self.pageRes.append(self.singleResData)
+                                self.fullResData.append(self.singleResData)
+                        self.singleResData = self.get_single_data()
 
-        def check_for_web_seed(self, web_page_url):
-            id = web_page_url.split("/")[-1].split(".")[0]
-            web_page_url = re.sub(r'\\', r'', web_page_url)
-            page = retrieve_url(web_page_url)
-            match = re.search(r'data-vnfo=(["\'])(?P<data>{.+?})\1', page)
-            if match:
-                num = 0
-                data1 = json.loads(match.group("data"))
-                parts = data1[id].split("/")
-                parts[1] += "8" + "/" + self.boo(str(self.ssut51(parts[6])), str(self.ssut51(parts[7])))
-                parts = self.preda(parts)
-                final_url = 'https://sxyprn.com' + "/".join(parts)
+        def handle_data(self, data: str) -> None:
+            if self.insideDataDiv:
+                for key, val in self.infoMap.items():
+                    if self.spanCount == val:
+                        curr_key = key
+                        if curr_key in self.singleResData and data.strip() != '':
+                            if self.singleResData[curr_key] == '-1':
+                                self.singleResData[curr_key] = data.strip()
+                            elif curr_key != 'name':
+                                self.singleResData[curr_key] += data.strip()
 
-                return "&ws=" + final_url + "&ws=" + urllib.request.urlopen(final_url).geturl() 
-                       
-            else:
-                return None
+    def search(self, what: str, cat: str = 'all') -> None:
+        # curr_cat = self.supported_categories[cat]
+        what = what.replace('%20', '+')
+        # analyze first 5 pages of results
+        for currPage in range(0, 5):
+            url = f"{self.url}/browse?t={what}&p={currPage}"
+            html = retrieve_url(url)
+            parser = self.MyHTMLParser(self.url)
+            parser.feed(html)
+            parser.close()
+            if len(parser.pageRes) < 20:
+                break
 
-        def handle_starttag(self, tag, attrs):
-            params = dict(attrs)
-            cssClasses = params.get("class", "")
-            if "torrents_list" in cssClasses:
-                self.foundResults = True
-                return
-
-            if (
-                self.foundResults
-                and "torrent_element" in cssClasses
-                and tag == self.DIV
-            ):
-                self.insideRow = True
-                if (
-                    self.insideRow
-                    and "torrent_element_text_div" in cssClasses
-                    and tag == self.DIV
-                ):
-                    self.insideTorrentData = True
-
-                if (
-                    self.insideRow
-                    and "torrent_element_info" in cssClasses
-                    and tag == self.DIV
-                ):
-                    self.insideMetaData = True
-                return
-
-            if (
-                self.insideTorrentData
-                and "torrent_element_text_span" in cssClasses
-                and tag == self.SPAN
-            ):
-                self.row["name"] = ""
-                self.insideTorrentName = True
-                self.shouldAddName = True
-
-            if self.insideTorrentName and tag == self.B:
-                self.shouldAddBrackets = True
-
-            if self.insideTorrentName and tag == self.I:
-                self.shouldAddBrackets = False
-                self.shouldAddName = False
-            
-            if self.insideMetaData and 'linkadd' in cssClasses and tag == self.A:
-                    self.shouldGetDate = True
-
-            if (
-                self.insideTorrentData
-                and tag == self.A
-                and "uploader_tel" not in cssClasses
-            ):
-                href = params.get("href")
-                link = f"{self.url}{href}"
-                self.row["desc_link"] = link
-                torrent_page = retrieve_url(link)
-                matches = re.finditer(self.magnet_regex, torrent_page, re.MULTILINE)
-                magnet_urls = [x.group() for x in matches]
-                self.row["link"] = magnet_urls[0].replace("'", '"').split('"')[1]
-
-                _has_page = re.finditer(self.has_web_regex, torrent_page, re.MULTILINE)
-                has_page = ["https://" + x.group(1) for x in _has_page]
-                if has_page:
-                    self.web_seed = self.check_for_web_seed(has_page[0])
-                    if self.web_seed:
-                        self.row["link"] = self.row["link"] + self.web_seed
-
-                return
-
-            if self.insideMetaData and "teis" in cssClasses:
-                self.insideLabelCell = True
-
-        def handle_data(self, data):
-
-            if self.shouldGetDate:
-                self.shouldGetDate = False
-                from datetime import datetime, timezone
-                if len(data.split(' ')) == 3 and data.split(' ')[2] == 'ago':
-                    if data.split(' ')[1] == 'minutes':
-                        self.row['pub_date'] = int(datetime.now().timestamp() - (int(data.split(' ')[0]) * 60))
-                    if data.split(' ')[1] == 'hours':
-                        self.row['pub_date'] = int(datetime.now().timestamp() - (int(data.split(' ')[0]) * 60 * 60))
-                    if data.split(' ')[1] == 'days':
-                        self.row['pub_date'] = int(datetime.now().timestamp() - (int(data.split(' ')[0]) * 60 * 60 * 24))
-                    if data.split(' ')[1] == 'months':
-                        self.row['pub_date'] = int(datetime.now().timestamp() - (int(data.split(' ')[0]) * 60 * 60 * 24 * 30))
-                    if data.split(' ')[1] == 'years':
-                        self.row['pub_date'] = int(datetime.now().timestamp() - (int(data.split(' ')[0]) * 60 * 60 * 24 * 365))
-                    
-                    
-
-            if self.insideRow:
-                if self.insideTorrentData and self.insideTorrentName:
-                    if self.shouldAddBrackets:
-                        self.row["name"] += f"[{data}]".strip()
-                        self.shouldAddBrackets = False
-                        return
-                    if self.shouldAddName:
-                        self.row["name"] += f" {data}".strip()
-                        return
-
-                if self.insideMetaData:
-                    if self.insideSizeCell:
-                        size = data.replace(",", ".")
-                        self.row["size"] = size
-                        self.insideSizeCell = False
-                        self.insideLabelCell = False
-
-                    if self.insideSeedCell:
-                        self.row["seeds"] = data
-                        self.insideSeedCell = False
-                        self.insideLabelCell = False
-
-                    if self.insideLeechCell:
-                        self.row["leech"] = data
-                        self.insideLeechCell = False
-                        self.insideLabelCell = False
-
-                    if self.insideLabelCell:
-                        if data == "[size]:":
-                            self.insideSizeCell = True
-                        if data == "[seeders]:":
-                            self.insideSeedCell = True
-                        if data == "[leechers]:":
-                            self.insideLeechCell = True
-
-                
-
-        def handle_endtag(self, tag):
-            if self.insideRow and tag == self.DIV:
-                if self.insideTorrentData and tag == self.DIV:
-                    self.insideTorrentData = False
-                    self.insideTorrentName = False
-                    return
-
-                if self.insideMetaData and tag == self.DIV:
-                    self.insideMetaData = False
-                    return
-
-                self.row["engine_url"] = self.url
-
-                if self.web_seed:
-                    self.row["name"] = "💥 " + self.row["name"]
-                    self.web_seed = False
-
-                prettyPrinter(self.row)
-                self.row = {}
-                self.insideRow = False
-
-    def download_torrent(self, info):
-        print(download_file(info))
-
-    def do_search(self, page, what):
-        parser = self.MyHtmlParser(self.url)
-        page_url = f"{self.url}/s/{what}/seeders/{page}"
-        retrievedHtml = retrieve_url(page_url)
-        parser.feed(retrievedHtml)
-        parser.close()
-
-    def search(self, what, cat="all"):
-        parser = self.MyHtmlParser(self.url)
-        what = what.replace("%20", "-")
-        what = what.replace(" ", "-")
-        page = 1
-
-        page_url = f"{self.url}/s/{what}/seeders/{page}"
-        retrievedHtml = retrieve_url(page_url)
-        pagination_matches = re.finditer(
-            self.pagination_regex, retrievedHtml, re.MULTILINE
-        )
-        pagination_pages = [x.group() for x in pagination_matches]
-        lastPage = int(
-            pagination_pages[0]
-            .replace("<div>", "")
-            .replace("</div>", "")
-            .split(" ")[-1]
-        )
-        page += 1
-        parser.feed(retrievedHtml)
-        parser.close()
-
-        threads = []
-        while page <= lastPage:
-            t = threading.Thread(args=(page, what), target=self.do_search)
-            t.start()
-            time.sleep(0.5)
-            threads.append(t)
-            page += 1
-
-        for t in threads:
-            t.join()
+    def download_torrent(self, info: str) -> None:
+        """ Downloader """
+        html = retrieve_url(info)
+        m = re.search('href=[\'\"].*?(magnet.+?)[\'\"]', html)
+        if m and len(m.groups()) > 0:
+            magnet = unquote(m.group(1))
+            print(magnet + ' ' + info)
